@@ -76,6 +76,7 @@ const TWAD = {
 let farmData = {};
 let notificationsSentForFarmEnding = {}; // for each given farm, we'll keep track if we've sent a notification already
 let notificationsSentForFarmEndingSoon = {}; // for each given farm, we'll keep track if we've sent a notification already
+let notificationsSentForBelowThreshold = {}; // for each given farm, we'll keep track if we've sent a notification already
 
 function loadFarmData() {
     try {
@@ -93,7 +94,16 @@ function saveFarmData() {
 
 async function updateWhitelist() {
     const whitelist = await mainContract.getWhitelist();
-    return whitelist;
+    // check if someone has dropped off the whitelist
+    const whitelistAddresses = whitelist.map((address) => address.toLowerCase());
+    const currentWhitelistAddresses = Object.keys(farmData);
+    const removedAddresses = currentWhitelistAddresses.filter((address) => !whitelistAddresses.includes(address));
+    removedAddresses.forEach((address) => {
+        delete farmData[address];
+        sendMessageToAllChats(`Address ${whitelistToName[address]} has been removed from the whitelist`);
+    });
+    saveFarmData();
+    return whitelistAddresses;
 }
 
 // watch for the whitelist filter, if it occurs update the whitelist
@@ -171,12 +181,19 @@ async function watchAndAlertForFallingDelegation() {
             const belowThreshold = percentageOwnership < thresholdValue
             const droppedMoreThanDecreaseThreshold = ((currentTWAD - percentageOwnership) / currentTWAD) * 100 > decreaseThreshold
 
-            if (belowThreshold || droppedMoreThanDecreaseThreshold) {
+            if (belowThreshold || droppedMoreThanDecreaseThreshold && (notificationsSentForBelowThreshold.hasOwnProperty(address) === false && !notificationsSentForBelowThreshold[address])) {
+                notificationsSentForBelowThreshold[address] = true;
                 const message = belowThreshold ?
                     `Warning: Delegation below threshold for address ${whitelistToName[address]}` :
                     `Warning: Significant drop in delegation for address ${whitelistToName[address]}`;
                 sendMessageToAllChats(message);
             }
+
+            if(notificationsSentForBelowThreshold.hasOwnProperty(address) === true && notificationsSentForBelowThreshold[address] && !belowThreshold && !droppedMoreThanDecreaseThreshold) {
+                notificationsSentForBelowThreshold[address] = false;
+                sendMessageToAllChats(`Delegation for address ${whitelistToName[address]} has recovered`);
+            }
+
         }
     } catch (error) {
         console.error('Error in watchAndAlertForFallingDelegation:', error);
@@ -210,20 +227,20 @@ async function checkFarmsExpiration() {
             if (dateBigInt < BigInt(currentTime)) {
                 if (notificationsSentForFarmEnding[address] !== true) {
                     notificationsSentForFarmEnding[address] = true;
-                    sendMessageToAllChats(`FARM ENDED: ${whitelistToName[address]} ${data.farmingAddress}`);
+                    sendMessageToAllChats(`FARM ENDED: ${whitelistToName[address]} ${new Date(Number((dateBigInt * 1000n).toString())).toUTCString()}}`);
                 }
             } else {
                 if (notificationsSentForFarmEnding[address] === true) {
                     notificationsSentForFarmEnding[address] = false;
                     notificationsSentForFarmEndingSoon[address] = false;
-                    sendMessageToAllChats(`FARM FUNDED: ${whitelistToName[address]} ${data.farmingAddress}`);
+                    sendMessageToAllChats(`FARM FUNDED: ${whitelistToName[address]}`);
                 }
             }
             // check if farm is ending soon (less than 12 hours), do not warn if it's already ended
             if (dateBigInt < BigInt(currentTime + 43200) && dateBigInt > BigInt(currentTime)) {
                 if (notificationsSentForFarmEndingSoon[address] !== true) {
                     notificationsSentForFarmEndingSoon[address] = true;
-                    sendMessageToAllChats(`FARM ENDING SOON: ${whitelistToName[address]} ${data.farmingAddress}`);
+                    sendMessageToAllChats(`FARM ENDING IN LESS THAN 12 HOURS: ${whitelistToName[address]} ${data.farmingAddress}`);
                 }
             }
         } catch (error) {
@@ -248,6 +265,7 @@ bot.catch((err) => {
 })
 
 function sendMessageToResolverAlerts(message) {
+    //bot.api.sendMessage('-4272262619', message);
     sendMessageToAllChats(message);
 }
 
@@ -276,6 +294,7 @@ async function main() {
     setInterval(checkFarmsExpiration, 3600000); // Check every hour
     setInterval(watchAndAlertForFallingDelegation, 3600000);  // Check every hour
     setInterval(updateWhitelistNames, 3600000); // Check every hour
+    setInterval(updateWhitelist, 3600000); // Check every hour
 }
 
 main().catch(console.error);
